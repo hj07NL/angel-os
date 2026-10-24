@@ -41,13 +41,14 @@ export function isBlockedIp(ip) {
   return true;
 }
 async function resolveSafe(host) {
-  if (net.isIP(host)) { if (!ALLOW_PRIVATE && isBlockedIp(host)) throw Object.assign(new Error('privé of intern IP-adres geweigerd'), { code: 'BLOCKED' }); return host; }
+  if (net.isIP(host)) { if (!ALLOW_PRIVATE && isBlockedIp(host)) throw Object.assign(new Error('privé of intern IP-adres geweigerd'), { code: 'BLOCKED' }); return [host]; }
   if (/^(localhost|.*\.local|.*\.internal|metadata\.google\.internal)$/i.test(host) && !ALLOW_PRIVATE) throw Object.assign(new Error('interne hostnaam geweigerd'), { code: 'BLOCKED' });
   const addrs = await dns.lookup(host, { all: true, verbatim: true });
   if (!addrs.length) throw Object.assign(new Error('geen DNS-records'), { code: 'ENOTFOUND' });
   const bad = addrs.find((a) => isBlockedIp(a.address));
   if (bad && !ALLOW_PRIVATE) throw Object.assign(new Error('domein wijst naar een privé-adres (' + bad.address + ') — geweigerd'), { code: 'BLOCKED' });
-  return addrs[0].address;
+  // IPv4 eerst (veel runners hebben geen IPv6); alle adressen zijn hierboven al gecontroleerd
+  return addrs.sort((a, b) => a.family - b.family).map((a) => a.address).slice(0, 3);
 }
 function validateUrl(u) {
   let url; try { url = new URL(u); } catch { throw Object.assign(new Error('ongeldige URL'), { code: 'BADURL' }); }
@@ -112,18 +113,23 @@ async function checkSite(site, prev) {
   const startDomain = regDomain(url.hostname); const startedHttps = url.protocol === 'https:';
   let res = null, lastErr = null;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    let ip;
-    try { ip = await resolveSafe(url.hostname.replace(/^\[|\]$/g, '')); }
+    let ips;
+    try { ips = await resolveSafe(url.hostname.replace(/^\[|\]$/g, '')); }
     catch (e) {
       if (e.code === 'BLOCKED') { out.status = 'suspicious'; out.detail = e.message; out.security = 'Verdacht: wijst naar een intern adres'; return out; }
       out.status = 'offline'; out.detail = (e.code === 'ENOTFOUND' || e.code === 'ENODATA') ? 'Domein bestaat niet of heeft geen DNS (' + url.hostname + ')' : 'DNS-fout: ' + (e.code || e.message); out.recheck = e.code === 'EAI_AGAIN'; return out;
     }
     res = null;
-    for (let attempt = 0; attempt < 2 && !res; attempt++) {
-      try { res = await request(url, ip); } catch (e) { lastErr = e; if (attempt === 0) await sleep(1500); }
+    // probeer elk gecontroleerd adres; per adres maximaal 2 pogingen
+    for (const ip of ips) {
+      for (let attempt = 0; attempt < 2 && !res; attempt++) {
+        try { res = await request(url, ip); } catch (e) { lastErr = e; if (/CERT|SELF_SIGNED|ALTNAME|UNABLE_TO|TLS/i.test(e.code || '')) break; if (attempt === 0) await sleep(1500); }
+      }
+      if (res || /CERT|SELF_SIGNED|ALTNAME|UNABLE_TO|TLS/i.test((lastErr && lastErr.code) || '')) break;
     }
     if (!res) {
       const c = lastErr && lastErr.code || '';
+      if (c === 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY' || c === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE') { out.status = 'inconclusive'; out.security = 'Certificaatketen onvolledig'; out.detail = 'De server stuurt een onvolledige certificaatketen. Browsers lossen dit meestal zelf op; de site werkt waarschijnlijk, maar is niet volledig geverifieerd.'; return out; }
       if (/CERT|SELF_SIGNED|ALTNAME|UNABLE_TO_VERIFY|TLS/i.test(c) || /certificate/i.test(lastErr && lastErr.message || '')) { out.status = 'cert_problem'; out.security = 'Certificaatprobleem: ' + c; out.detail = 'De HTTPS-verbinding is niet geldig (' + (lastErr.message || c) + ')'; return out; }
       out.status = 'offline'; out.detail = c === 'ETIMEDOUT' ? 'Server reageert niet (time-out, 2 pogingen)' : c === 'ECONNREFUSED' ? 'Verbinding geweigerd' : c === 'ECONNRESET' ? 'Verbinding verbroken' : 'Niet bereikbaar: ' + (lastErr && lastErr.message || c); out.recheck = c === 'ETIMEDOUT' || c === 'ECONNRESET'; return out;
     }
