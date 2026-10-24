@@ -1,0 +1,15 @@
+[
+ {
+  "month": "2026-10",
+  "checked_at": "2026-10-24T20:15:26.917Z",
+  "total": 70,
+  "problems": 13,
+  "counts": {
+   "https_valid": 57,
+   "cert_problem": 1,
+   "inconclusive": 8,
+   "offline": 3,
+   "redirected": 1
+  }
+ }
+]
