@@ -1,0 +1,2 @@
+{ "name": "Angel OS", "short_name": "Angel OS", "start_url": "./", "display": "standalone", "background_color": "#0a0b10", "theme_color": "#0a0b10", "lang": "nl",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }] }
