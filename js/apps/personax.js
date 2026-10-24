@@ -279,8 +279,8 @@
 
   // ---------- App ----------
   A.registerApp({
-    id: 'personax', name: 'PersonaX AI', icon: 'users', dock: true, keywords: 'persona onderzoek profiel research deep-profile',
-    color: 'linear-gradient(135deg,#818cf8,#c084fc)',
+    id: 'personax', name: A.t('app.personax'), icon: 'users', keywords: 'persona onderzoek profiel research deep-profile personen',
+    color: 'linear-gradient(160deg,#a5b4fc,#8b5cf6)',
     render(el, route) {
       const tab = route.sub[0] || 'search';
       const tabs = [['search', 'Onderzoek', 'search'], ['history', 'Onderzoeksgeschiedenis', 'history'], ['compare', 'Vergelijken', 'compare'], ['side', 'Naast elkaar', 'users'], ['updates', 'Updatecentrum', 'bell']];
