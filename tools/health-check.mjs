@@ -136,7 +136,7 @@ async function checkSite(site, prev) {
     if (res.status >= 300 && res.status < 400 && res.headers.location) {
       let next; try { next = validateUrl(new URL(res.headers.location, url).href); } catch (e) { out.status = 'suspicious'; out.detail = 'Doorverwijzing naar ongeldige of geweigerde URL: ' + e.message; return out; }
       if (url.protocol === 'https:' && next.protocol === 'http:') { out.status = 'suspicious'; out.detail = 'Doorverwijzing van HTTPS naar onbeveiligd HTTP'; out.final_url = next.href; out.security = 'Verdacht: downgrade naar HTTP'; return out; }
-      url = next; out.redirects++; continue;
+      (out.chain = out.chain || [url.href]).push(next.href); url = next; out.redirects++; continue;
     }
     break;
   }
@@ -146,6 +146,10 @@ async function checkSite(site, prev) {
   const info = extract(res.body || ''); Object.assign(out, { title: info.title, meta_description: info.meta_description, hash: info.hash });
   if (prev && prev.hash && info.hash !== prev.hash && prev.textLen && Math.abs(info.textLen - prev.textLen) / Math.max(info.textLen, prev.textLen) > 0.35) out.changed = true;
   out.textLen = info.textLen;
+  // beveiligingsheaders (informatief; ontbreken is geen bewijs van een probleem)
+  { const hh = res.headers; const csp = String(hh['content-security-policy'] || '');
+    out.sec_headers = { hsts: !!hh['strict-transport-security'], csp: !!csp, nosniff: /nosniff/i.test(String(hh['x-content-type-options'] || '')), frame: !!hh['x-frame-options'] || /frame-ancestors/i.test(csp), referrer: !!hh['referrer-policy'] };
+    out.sec_score = Object.values(out.sec_headers).filter(Boolean).length; }
   const finalDomain = regDomain(url.hostname);
   const crossDomain = finalDomain !== startDomain;
 
@@ -182,6 +186,23 @@ async function loadSites() {
   const seen = new Set(); return list.filter((s) => { const k = s.url.trim(); if (seen.has(k)) return false; seen.add(k); return true; });
 }
 
+// Optionele reputatiecheck via Google Safe Browsing (gratis API-sleutel als GitHub-secret SAFE_BROWSING_API_KEY).
+// Zonder sleutel wordt dit overgeslagen en staat dat eerlijk in het rapport.
+async function safeBrowsing(urls) {
+  const key = process.env.SAFE_BROWSING_API_KEY; if (!key) return null;
+  const hits = {};
+  for (let i = 0; i < urls.length; i += 400) {
+    const batch = urls.slice(i, i + 400);
+    try {
+      const r = await fetch('https://safebrowsing.googleapis.com/v4/threatMatches:find?key=' + encodeURIComponent(key), { method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(30000),
+        body: JSON.stringify({ client: { clientId: 'angel-os', clientVersion: '1.0' }, threatInfo: { threatTypes: ['MALWARE', 'SOCIAL_ENGINEERING', 'UNWANTED_SOFTWARE', 'POTENTIALLY_HARMFUL_APPLICATION'], platformTypes: ['ANY_PLATFORM'], threatEntryTypes: ['URL'], threatEntries: batch.map((u) => ({ url: u })) } }) });
+      if (!r.ok) return { error: 'HTTP ' + r.status };
+      const j = await r.json(); (j.matches || []).forEach((m) => { hits[m.threat.url] = m.threatType; });
+    } catch (e) { return { error: e.message }; }
+  }
+  return { hits };
+}
+
 async function main() {
   const sites = await loadSites();
   let prev = {}; try { prev = JSON.parse(await fs.readFile(path.join(OUT, 'latest.json'), 'utf8')).results || {}; } catch {}
@@ -210,10 +231,12 @@ async function main() {
   const again = Object.values(results).filter((r) => r.recheck && r.status === 'inconclusive');
   if (again.length) { await sleep(5000); for (const r of again) { const s = sites.find((x) => x.url === r.url); try { const r2 = await checkSite(s, prev[s.url]); if (r2.status !== 'inconclusive') results[s.url] = r2; } catch {} } }
 
+  const sbr = await safeBrowsing(Object.keys(results));
+  if (sbr && sbr.hits) Object.values(results).forEach((r) => { const t = sbr.hits[r.url]; r.safe_browsing = t ? 'threat:' + t : 'clean'; if (t) { r.status = 'suspicious'; r.security = 'Google Safe Browsing meldt: ' + t; r.detail = 'Gemarkeerd door Google Safe Browsing (' + t + ')'; } });
   const counts = {}; Object.values(results).forEach((r) => { counts[r.status] = (counts[r.status] || 0) + 1; });
   const problems = Object.values(results).filter((r) => !['online', 'https_valid'].includes(r.status)).length;
   const changes = Object.values(results).filter((r) => prev[r.url] && prev[r.url].status !== r.status).map((r) => ({ url: r.url, from: prev[r.url].status, to: r.status }));
-  const report = { version: 1, checked_at: new Date().toISOString(), runner: 'GitHub Actions', note: 'HTTPS bewijst niet dat een website betrouwbaar is. Er is geen malwarescan of reputatiecheck uitgevoerd.', summary: { total: sites.length, problems, counts, changes }, results };
+  const report = { version: 1, checked_at: new Date().toISOString(), runner: 'GitHub Actions', note: 'HTTPS bewijst niet dat een website betrouwbaar is. ' + (sbr && sbr.hits ? 'Reputatiecheck via Google Safe Browsing is uitgevoerd; dat is geen garantie.' : 'Er is geen reputatiecheck uitgevoerd' + (sbr && sbr.error ? ' (Safe Browsing-fout: ' + sbr.error + ')' : ' (geen SAFE_BROWSING_API_KEY ingesteld)') + '.'), summary: { total: sites.length, problems, counts, changes }, results };
   await fs.mkdir(path.join(OUT, 'history'), { recursive: true });
   await fs.writeFile(path.join(OUT, 'latest.json'), JSON.stringify(report, null, 1));
   const month = report.checked_at.slice(0, 7);
