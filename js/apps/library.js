@@ -15,8 +15,74 @@
   function healthOf(s) { const h = data.health(); return h.results ? h.results[s.url] : null; }
   function statusChip(s) { const r = healthOf(s); const st = r ? r.status : 'unchecked'; return '<span class="status st-' + st + '" title="' + esc(r && r.detail ? r.detail : '') + '">' + esc(t('site.status.' + st)) + '</span>'; }
 
+  // Uitgebreid rapport per website uit de maandelijkse controle
+  function reportHtml(h) {
+    if (!h) return '';
+    const kv = (k, v) => '<div class="kv"><span>' + k + '</span><span class="muted" style="text-align:right;word-break:break-word">' + v + '</span></div>';
+    const days = (iso) => Math.round((new Date(iso) - Date.now()) / 864e5);
+    const H = h.sec_headers; const names = { hsts: 'HSTS', csp: 'CSP', nosniff: 'nosniff', frame: 'frame-bescherming', referrer: 'Referrer-Policy' };
+    return '<details class="detail-block"><summary class="label" style="cursor:pointer">Rapport</summary>' +
+      (h.http ? kv('HTTP-status', esc(h.http) + (h.ms ? ' · ' + esc(h.ms) + ' ms' : '')) : '') +
+      (h.chain && h.chain.length ? kv('Doorverwijzingen (' + h.redirects + ')', h.chain.map((u) => esc(A.hostOf(u))).join(' → ')) : (h.final_url ? kv('Eindadres', esc(A.hostOf(h.final_url))) : '')) +
+      (h.cert_expires ? kv('Certificaat', 'geldig tot ' + esc(A.fmtNum(new Date(h.cert_expires))) + (days(h.cert_expires) < 30 ? ' (' + days(h.cert_expires) + ' dagen)' : '')) : '') +
+      (h.domain_expires ? kv('Domein verloopt', esc(A.fmtNum(new Date(h.domain_expires)))) : '') +
+      (H ? kv('Beveiligingsheaders', h.sec_score + ' van 5 aanwezig<br><span class="faint" style="font-size:11px">' + Object.keys(names).map((k) => (H[k] ? '✓ ' : '✗ ') + names[k]).join(' · ') + '</span>') : '') +
+      (h.safe_browsing ? kv('Safe Browsing', h.safe_browsing === 'clean' ? 'geen melding' : '⚠ ' + esc(h.safe_browsing)) : kv('Safe Browsing', 'niet gecontroleerd')) +
+      (h.changed ? kv('Inhoud', 'sterk veranderd sinds vorige controle') : '') +
+      '<p class="faint" style="font-size:11.5px;margin:6px 0 0">Ontbrekende headers zijn geen bewijs van een probleem. De controle markeert alleen; er wordt nooit iets verwijderd.</p></details>';
+  }
+
+  // ---------- Website toevoegen in twee stappen: Analyseren → Toevoegen ----------
+  function openAddWebsite(presetFolder) {
+    A.openModal('<h2>Website toevoegen</h2><div data-step></div>', (m, close) => {
+      const box = m.querySelector('[data-step]'); let last = { url: '', name: '' };
+      const step1 = (err) => {
+        box.innerHTML = '<p class="muted" style="margin-top:0">Stap 1 van 2: Angel bekijkt het adres en stelt onderwerp, map, beschrijving en een basis-veiligheidscheck voor. Er wordt nog niets opgeslagen.</p>' +
+          '<label class="field">' + t('common.url') + '<input class="input" name="url" placeholder="https://…" value="' + esc(last.url) + '"></label>' +
+          '<label class="field">' + t('common.name') + ' (optioneel)<input class="input" name="name" value="' + esc(last.name) + '"></label>' + (err ? '<p style="color:var(--danger);font-size:13px">' + esc(err) + '</p>' : '') +
+          '<div class="modal-actions"><button class="btn" data-close>' + t('common.cancel') + '</button><button class="btn btn-primary" data-analyze>' + icon('sparkles') + 'Analyseren</button></div>';
+        const f = (n) => box.querySelector('[name="' + n + '"]'); setTimeout(() => f('url').focus(), 50);
+        const go = async () => {
+          last = { url: f('url').value.trim(), name: f('name').value.trim() }; if (!last.url) { step1('Vul een URL in'); return; }
+          const b = box.querySelector('[data-analyze]'); b.disabled = true; b.textContent = 'Analyseren…';
+          try { step2(await F().analyze(last.url, last.name)); } catch (e) { step1(e.message === 'Invalid URL' ? t('err.invalidUrl') : e.message); }
+        };
+        box.querySelector('[data-analyze]').onclick = go; f('url').onkeydown = (e) => { if (e.key === 'Enter') go(); };
+        box.querySelector('[data-close]').onclick = close;
+      };
+      const step2 = (r) => {
+        const lvl = { ok: ['✅', 'Geen waarschuwingen in de basiscontrole'], let_op: ['⚠️', 'Let op'], risico: ['⛔', 'Risico: controleer goed voor je toevoegt'] }[r.safety.level];
+        const folderPath = r.path.join(' › ');
+        box.innerHTML = '<p class="muted" style="margin-top:0">Stap 2 van 2: controleer het voorstel en voeg toe.' + (r.aiUsed ? ' <span class="chip on">Analyse door Angel AI</span>' : ' <span class="chip">Ingebouwde regels</span>') + '</p>' +
+          (r.duplicate ? '<div class="banner">' + icon('alert') + '<span>Deze site staat al in je bibliotheek als “' + esc(r.duplicate.name) + '”.</span></div>' : '') +
+          '<div class="row2"><label class="field">' + t('common.name') + '<input class="input" name="name" value="' + esc(r.name) + '"></label><label class="field">Map / onderwerp<select class="input" name="folder">' +
+          (r.isNewFolder ? '<option value="__new">✨ Nieuw: ' + esc(folderPath) + '</option>' : '') + folderOptions(presetFolder || r.folderId) + '</select></label></div>' +
+          '<p class="faint" style="font-size:12px;margin:-4px 0 8px">' + (r.uncertain ? 'Angel twijfelt (' + Math.round(r.confidence * 100) + '%): kies zelf een map.' : 'Zekerheid ' + Math.round(r.confidence * 100) + '% · ' + esc((r.why || []).join(', '))) + (r.isNewFolder ? ' · Angel stelt een nieuwe map voor; die wordt pas aangemaakt als je op Toevoegen drukt.' : '') + '</p>' +
+          '<label class="field">Beschrijving<textarea class="input" name="description" rows="2">' + esc(r.description) + '</textarea></label>' +
+          '<label class="field">Wanneer gebruik je het?<textarea class="input" name="ai_summary" rows="2">' + esc(r.ai_summary) + '</textarea></label>' +
+          '<label class="field">Tags (komma-gescheiden)<input class="input" name="tags" value="' + esc(r.tags.join(', ')) + '"></label>' +
+          '<div class="detail-block" style="margin-top:6px"><div class="label">Veiligheid ' + lvl[0] + '</div><div style="font-size:13px;margin-top:4px"><b>' + lvl[1] + '</b></div>' + r.safety.checks.map((c) => '<div class="kv"><span>' + (c.ok ? '✓ ' : '⚠ ') + esc(c.label) + '</span><span class="muted" style="font-size:12px">' + esc(c.note || '') + '</span></div>').join('') + '<p class="faint" style="font-size:12px;margin:6px 0 0">Dit is een basiscontrole op het adres. Een browser kan de site zelf niet doorlichten; online-status, certificaat en beveiligingsheaders volgen in de maandelijkse controle. HTTPS betekent niet dat een site betrouwbaar is.</p></div>' +
+          '<div class="modal-actions"><button class="btn" data-back style="margin-right:auto">← Terug</button><button class="btn" data-close>' + t('common.cancel') + '</button><button class="btn btn-primary" data-add ' + (r.duplicate ? 'disabled' : '') + '>Toevoegen</button></div>';
+        const f = (n) => box.querySelector('[name="' + n + '"]');
+        box.querySelector('[data-back]').onclick = () => step1(); box.querySelector('[data-close]').onclick = close;
+        box.querySelector('[data-add]').onclick = () => {
+          const name = f('name').value.trim() || r.name; let fid = f('folder').value;
+          if (fid === '__new') fid = F().ensurePath(r.path);
+          const list = data.websites(); const now = new Date().toISOString();
+          if (list.find((x) => A.normUrl(x.url) === A.normUrl(r.url))) { A.toast('Staat al in je bibliotheek'); return; }
+          const site = { id: A.uid(), name, url: r.url, category: 'other', favicon_url: null, is_favorite: false, rating: 0, use_count: 0, sort_order: 0, last_used_at: null, created_at: now, updated_at: now, description: f('description').value.trim(), ai_summary: f('ai_summary').value.trim(), notes: '', tags: f('tags').value.split(',').map((x) => x.trim()).filter(Boolean), folder_id: fid || F().uncategorized(data.folders()).id, classification: { confidence: r.confidence, uncertain: r.uncertain, why: r.why, at: now, safety: r.safety.level } };
+          list.unshift(site); data.saveWebsites(list); close();
+          A.toast(site.name + ' toegevoegd aan ' + F().pathLabel(data.folders(), site.folder_id)); A.rerender();
+        };
+      };
+      step1();
+    });
+  }
+  A.openAddWebsite = openAddWebsite;
+
   // ---------- Website toevoegen/bewerken ----------
   function openWebsiteDialog(existing, presetFolder) {
+    if (!existing) return openAddWebsite(presetFolder);
     const s = existing || {};
     A.openModal('<h2>' + (existing ? 'Website bewerken' : 'Website toevoegen') + '</h2>' +
       '<label class="field">' + t('common.url') + '<input class="input" name="url" placeholder="https://…" value="' + esc(s.url || '') + '"></label>' +
@@ -172,7 +238,7 @@
         const nav = (key, label, ic, count) => '<button class="nav-item ' + (st.filter === key ? 'on' : '') + '" data-f="' + key + '">' + ic + '<span>' + esc(label) + '</span>' + (count != null ? '<small>' + count + '</small>' : '') + '</button>';
         let tree = '';
         const walk = (pid, depth) => F().children(folders, pid).forEach((f) => {
-          const kids = F().children(folders, f.id).length; const open = st.open.has(f.id) || (st.folder && F().pathOf(folders, st.folder).some((p) => p.id === f.id));
+          const kids = F().children(folders, f.id).length; const open = f.root || st.open.has(f.id) || (st.folder && F().pathOf(folders, st.folder).some((p) => p.id === f.id));
           tree += '<div class="tree-row ' + (st.filter === 'folder' && st.folder === f.id ? 'on' : '') + '" data-fid="' + f.id + '" draggable="true" style="padding-left:' + (depth * 14) + 'px">' + (kids ? '<button class="tw ' + (open ? 'open' : '') + '" data-tw="' + f.id + '" aria-label="Uitklappen">' + icon('chevR') + '</button>' : '<span class="tw"></span>') + '<button class="tn" data-folder="' + f.id + '"><span>' + esc(f.emoji || '📁') + '</span><span>' + esc(f.name) + '</span></button><small>' + F().countIn(folders, all, f.id, true) + '</small></div>';
           if (kids && open) walk(f.id, depth + 1);
         });
@@ -212,7 +278,7 @@
         const path = F().pathOf(folders, st.folder); const f = path[path.length - 1];
         crumbs.innerHTML = '<button data-root>Mappen</button>' + path.map((p) => '›<button data-c="' + p.id + '">' + esc(p.name) + '</button>').join('') +
           '<span style="flex:1"></span><label class="chip"><input type="checkbox" data-deep' + (st.deep ? ' checked' : '') + '> incl. submappen</label>' +
-          '<button class="btn btn-sm" data-sub>' + icon('folderPlus') + 'Submap</button><button class="btn btn-sm" data-ren>' + icon('pencil') + t('common.rename') + '</button><button class="btn btn-sm" data-mv>' + t('common.move') + '</button><button class="btn btn-sm" data-merge>Samenvoegen</button>' + (f.system ? '' : '<button class="btn btn-sm btn-danger" data-delf>' + icon('trash') + '</button>');
+          '<button class="btn btn-sm" data-sub>' + icon('folderPlus') + 'Submap</button><button class="btn btn-sm" data-ren>' + icon('pencil') + t('common.rename') + '</button><button class="btn btn-sm" data-mv>' + t('common.move') + '</button><button class="btn btn-sm" data-merge>Samenvoegen</button>' + ((f.system || f.root) ? '' : '<button class="btn btn-sm btn-danger" data-delf>' + icon('trash') + '</button>');
         crumbs.querySelector('[data-root]').onclick = () => { st.filter = 'all'; st.folder = null; drawAll(); };
         crumbs.querySelectorAll('[data-c]').forEach((b) => (b.onclick = () => { st.folder = b.dataset.c; drawAll(); }));
         crumbs.querySelector('[data-deep]').onchange = (e) => { st.deep = e.target.checked; store.set('libDeep', st.deep); drawGrid(); };
@@ -273,7 +339,7 @@
           '<div class="detail-block"><div class="label">Map</div><select class="input" data-folder style="margin-top:6px">' + folderOptions(s.folder_id) + '</select>' + (s.classification && s.classification.uncertain ? '<p class="faint" style="font-size:12px">Angel twijfelde bij het indelen (' + Math.round((s.classification.confidence || 0) * 100) + '%).</p>' : '') + '</div>' +
           '<div class="detail-block"><div class="label">Tags</div><div class="tags">' + (s.tags || []).map((x) => '<button class="chip" data-tag="' + esc(x) + '">' + esc(x) + '</button>').join('') + '<button class="chip" data-addtag>+ tag</button></div></div>' +
           '<div class="detail-block"><div class="label">Beoordeling</div><div class="stars">' + [1, 2, 3, 4, 5].map((n) => '<button data-rate="' + n + '" class="' + ((s.rating || 0) >= n ? 'on' : '') + '" aria-label="' + n + ' sterren">★</button>').join('') + '</div></div>' +
-          '<div class="detail-block"><div class="label">Status</div><div style="margin-top:6px">' + statusChip(s) + '</div>' + (h ? '<div class="kv"><span>Laatst gecontroleerd</span><span class="muted">' + esc(A.fmtDateTime(h.checked_at || data.health().checked_at)) + '</span></div><div class="kv"><span>Beveiliging</span><span class="muted">' + esc(h.security || 'niet geverifieerd') + '</span></div>' + (h.detail ? '<p class="faint" style="font-size:12px">' + esc(h.detail) + '</p>' : '') : '<p class="faint" style="font-size:12px;margin:6px 0 0">Wordt meegenomen in de volgende maandelijkse controle.</p>') + '</div>' +
+          '<div class="detail-block"><div class="label">Status</div><div style="margin-top:6px">' + statusChip(s) + '</div>' + (h ? '<div class="kv"><span>Laatst gecontroleerd</span><span class="muted">' + esc(A.fmtDateTime(h.checked_at || data.health().checked_at)) + '</span></div><div class="kv"><span>Beveiliging</span><span class="muted">' + esc(h.security || 'niet geverifieerd') + '</span></div>' + (h.detail ? '<p class="faint" style="font-size:12px">' + esc(h.detail) + '</p>' : '') + reportHtml(h) : '<p class="faint" style="font-size:12px;margin:6px 0 0">Wordt meegenomen in de volgende maandelijkse controle.</p>') + '</div>' +
           (s.notes ? '<div class="detail-block"><div class="label">Notities</div><p>' + esc(s.notes) + '</p></div>' : '') +
           '<div class="detail-block"><div class="kv"><span>Toegevoegd</span><span class="muted">' + esc(s.created_at ? A.fmtNum(new Date(s.created_at)) : '—') + '</span></div><div class="kv"><span>Laatst geopend</span><span class="muted">' + esc(s.last_used_at ? A.relTime(s.last_used_at) + ' · ' + (s.use_count || 0) + '×' : 'Nog niet vanuit hier') + '</span></div><div class="kv"><span>Map</span><span class="muted">' + esc(F().pathLabel(folders, s.folder_id)) + '</span></div></div>' +
           '<div class="detail-block" style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-sm" data-fav>' + icon('star') + (s.is_favorite ? 'Uit favorieten' : 'Favoriet') + '</button><button class="btn btn-sm" data-analyze>' + icon('sparkles') + 'Laat Angel analyseren</button><button class="btn btn-sm" data-edit>' + icon('pencil') + t('common.edit') + '</button><button class="btn btn-sm btn-danger" data-del>' + icon('trash') + '</button></div>';

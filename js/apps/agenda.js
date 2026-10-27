@@ -72,7 +72,7 @@
       (it.subject ? '<span class="chip">📚 ' + esc(it.subject) + '</span>' : (it.category && it.category !== 'overig' ? '<span class="chip">' + esc(P().CATEGORIES[it.category] || '') + '</span>' : '')) +
       (it.time ? '<span class="chip">🕑 ' + esc(it.time) + (it.end ? '–' + esc(it.end) : '') + '</span>' : '') +
       (it.deadline ? '<span class="chip" style="color:var(--danger)">⏳ ' + esc(A.fmtShort(it.deadline)) + '</span>' : '') +
-      (it.originalDate && it.originalDate !== it.date ? '<span class="chip" title="Oorspronkelijke datum">↪ ' + esc(A.fmtShort(it.originalDate)) + '</span>' : '') +
+      (A.tasks.postponedDays(it) ? '<span class="chip postponed" title="Oorspronkelijke datum: ' + esc(A.fmtShort(it.originalDate)) + '">⏭ ' + esc(A.tasks.postponedLabel(A.tasks.postponedDays(it))) + '</span>' : (it.originalDate && it.originalDate !== it.date ? '<span class="chip" title="Oorspronkelijke datum">↪ ' + esc(A.fmtShort(it.originalDate)) + '</span>' : '')) +
       (it.estimate ? '<span class="chip">⌛ ' + esc(it.estimate) + ' min</span>' : '') + '</div>';
   }
   function taskRow(it, opts) {
@@ -117,6 +117,89 @@
     });
   }
 
+  // ---------- Gedeeld dagoverzicht: agenda-items, taken en externe afspraken in één lijst ----------
+  const extKey = (e) => (e.cal || '') + '|' + e.start + '|' + (e.summary || '');
+  function extDone() { const m = store.get('extDone', {}); return m && typeof m === 'object' ? m : {}; }
+  function toggleExtDone(key) {
+    const m = extDone(); if (m[key]) delete m[key]; else m[key] = new Date().toISOString();
+    const cut = Date.now() - 60 * 864e5; Object.keys(m).forEach((k) => { if (new Date(m[k]).getTime() < cut) delete m[k]; });
+    store.set('extDone', m);
+  }
+  function extRow(e, done) {
+    const allDay = !!e.allDay; const time = allDay ? 'Hele dag' : hm(e.start) + (e.end ? '–' + hm(e.end) : '');
+    return '<div class="task-wrap-ext" data-ext="' + esc(extKey(e)) + '"><div class="task ' + (done ? 'done' : '') + '"><button class="check ' + (done ? 'on' : '') + '" data-ext-check aria-label="' + (done ? 'Heropenen' : 'Afvinken') + '">' + (done ? icon('check') : '') + '</button>' +
+      '<div class="t-body"><div class="t-title">' + esc(e.summary || 'Afspraak') + '</div><div class="t-meta"><span class="chip"><span class="dot t-event"></span>Agenda</span><span class="chip">🕑 ' + esc(time) + '</span>' + (e.location ? '<span class="chip">📍 ' + esc(e.location) + '</span>' : '') + (e.cal ? '<span class="chip">' + esc(e.cal) + '</span>' : '') + '</div></div></div></div>';
+  }
+  // Alle items van één dag in één lijst: eerst hele dagen, dan op tijd, dan zonder tijd; afgevinkt onderaan.
+  function dayEntries(d) {
+    const ex = extDone();
+    const own = data.items().filter((i) => i.date === d).map((i) => ({ kind: 'own', it: i, done: !!i.done, time: i.time || null, ord: i.order || 0 }));
+    const ext = store.get('rooster', []).filter((e) => A.ymd(new Date(e.start)) === d).map((e) => ({ kind: 'ext', e, done: !!ex[extKey(e)], time: e.allDay ? '' : hm(e.start), ord: 0 }));
+    const rank = (x) => (x.done ? 3 : x.time === '' ? 0 : x.time ? 1 : 2);
+    return own.concat(ext).sort((a, b) => rank(a) - rank(b) || String(a.time || '').localeCompare(String(b.time || '')) || a.ord - b.ord);
+  }
+  function unifiedList(d, emptyText) {
+    const list = dayEntries(d);
+    return '<div class="task-list" data-unified>' + (list.length ? list.map((x) => (x.kind === 'own' ? taskRow(x.it) : extRow(x.e, x.done))).join('') : '<div class="empty">' + (emptyText || 'Niets gepland op deze dag.') + '</div>') + '</div>';
+  }
+  function bindExt(root, after) {
+    root.querySelectorAll('[data-ext-check]').forEach((b) => (b.onclick = (ev) => { ev.stopPropagation(); toggleExtDone(b.closest('[data-ext]').dataset.ext); after(); }));
+  }
+  A.dayEntries = dayEntries;
+
+  // ---------- Snel toevoegen (overal bereikbaar via de + -knop) ----------
+  const CAT_TYPES = [['event', 'Afspraken'], ['task', 'Taken'], ['reminder', 'Herinneringen'], ['test', 'Toetsen'], ['homework', 'Huiswerk']];
+  A.CAT_TYPES = CAT_TYPES;
+  function openQuickAdd(preset) {
+    preset = preset || {}; const def = preset.date || A.today();
+    A.openModal('<h2>Snel toevoegen</h2>' +
+      '<label class="field">Titel<input class="input" name="title" autocomplete="off" placeholder="Bijv. ‘morgen 16:00 economie leren’" aria-label="Titel"></label>' +
+      '<div class="tags" data-cats role="radiogroup" aria-label="Categorie"><button type="button" class="chip big on" data-cat="">Automatisch</button>' + CAT_TYPES.map(([k, l]) => '<button type="button" class="chip big" data-cat="' + k + '"><span class="dot t-' + k + '"></span>' + l + '</button>').join('') + '</div>' +
+      '<div class="row3" style="margin-top:12px"><label class="field">Datum<input class="input" type="date" name="date" value="' + esc(def) + '"></label><label class="field">Tijd (optioneel)<input class="input" type="time" name="time"></label><label class="field">Prioriteit<select class="input" name="priority"><option value="normal">normaal</option><option value="high">hoog</option><option value="low">laag</option></select></label></div>' +
+      '<div class="parse-preview" data-qa-prev></div>' +
+      '<div class="modal-actions"><button class="btn" data-more style="margin-right:auto">Meer opties…</button><button class="btn" data-close>' + t('common.cancel') + '</button><button class="btn btn-primary" data-save>' + t('common.add') + '</button></div>',
+      (m, close) => {
+        const f = (n) => m.querySelector('[name="' + n + '"]'); let cat = '', touched = { date: false, time: false, priority: false };
+        const inp = f('title'); const prev = m.querySelector('[data-qa-prev]');
+        setTimeout(() => inp.focus(), 60);
+        f('date').oninput = () => { touched.date = true; }; f('time').oninput = () => { touched.time = true; }; f('priority').onchange = () => { touched.priority = true; };
+        m.querySelectorAll('[data-cat]').forEach((b) => (b.onclick = () => { cat = b.dataset.cat; m.querySelectorAll('[data-cat]').forEach((x) => x.classList.toggle('on', x === b)); show(); }));
+        const parsed = () => P().parse(inp.value.trim(), { defaultDate: def });
+        function show() {
+          const v = inp.value.trim(); if (!v) { prev.innerHTML = '<span class="faint">Datum en tijd uit je tekst worden herkend. Je kunt ze hierboven ook zelf kiezen.</span>'; return; }
+          const r = parsed(); const type = cat || r.type;
+          if (!touched.date && r.date) f('date').value = r.date; if (!touched.time) f('time').value = r.time || '';
+          prev.innerHTML = '<span class="faint">Angel:</span><span class="chip"><span class="dot t-' + type + '"></span>' + esc(kindLabel(type)) + '</span><span class="chip">“' + esc(r.title) + '”</span>' + (r.subject ? '<span class="chip on">📚 ' + esc(r.subject) + '</span>' : '') + (r.question && !touched.date ? '<span class="chip" style="color:var(--yellow)">? ' + esc(r.question.text) + '</span>' : '');
+        }
+        inp.oninput = show; show();
+        const save = () => {
+          const v = inp.value.trim(); if (!v) { A.toast('Geef een titel'); return; }
+          const r = parsed();
+          if (r.question && !touched.date && !cat) { close(); A.handleQuickResult({ ok: true, question: r.question, parsed: r, original: v }, v); return; }
+          if (f('time').value && touched.time === false && !r.time) { /* tijd uit veld */ }
+          const rec = { title: r.title || v, type: cat || r.type, date: f('date').value || r.date || def, time: f('time').value || r.time || null, end: touched.time ? null : (r.end || null), deadline: r.deadline || null, subject: r.subject || null, category: r.category || 'overig', priority: touched.priority ? f('priority').value : (r.priority || 'normal') };
+          const it = A.tasks.addItem(rec); close(); redraw();
+          A.toast(kindLabel(it.type) + ' toegevoegd' + (it.date ? ' · ' + (it.date === A.today() ? 'vandaag' : A.fmtLong(it.date)) : ''), { label: t('common.undo'), run: () => { data.saveItems(data.items().filter((x) => x.id !== it.id)); redraw(); } });
+          if (A.currentApp() !== 'agenda') A.rerender();
+        };
+        m.querySelector('[data-save]').onclick = save; inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } };
+        m.querySelector('[data-more]').onclick = () => { const r = inp.value.trim() ? parsed() : {}; close(); openItemDialog(null, { title: r.title || '', date: f('date').value || def, time: f('time').value || null, type: cat || r.type || 'task' }); };
+      });
+  }
+  A.openQuickAdd = openQuickAdd;
+
+  // ---------- Agenda-status (laatste update per bron + verversknop) ----------
+  function calStrip() {
+    const sm = A.cal.summary(); if (!sm.cals.length) return '';
+    const tm = (iso) => { const d = new Date(iso); return A.pad2(d.getHours()) + ':' + A.pad2(d.getMinutes()); };
+    return '<div class="cal-strip" role="status"><button class="btn btn-sm" data-cal-all ' + (sm.busy ? 'disabled' : '') + '>' + icon('refresh') + (sm.busy ? 'Verversen…' : 'Agenda\'s verversen') + '</button>' +
+      sm.cals.map((c) => c.error ? '<span class="chip err" title="' + esc(c.error) + '">⚠ ' + esc(c.label) + ': ' + esc(c.error) + (c.updated ? ' · laatste succes ' + tm(c.updated) : '') + '</span>' : '<span class="chip">' + esc(c.label) + ' · ' + (c.updated ? tm(c.updated) : 'nog niet opgehaald') + '</span>').join('') + '</div>';
+  }
+  function bindStrip(root, after) {
+    const b = root.querySelector('[data-cal-all]'); if (!b) return;
+    b.onclick = async () => { b.disabled = true; const res = await A.cal.refreshAll({ manual: true }); const bad = res.filter((r) => !r.ok); A.toast(bad.length ? bad.length + ' van ' + res.length + ' agenda\'s gaven een fout' : 'Alle agenda\'s bijgewerkt', null, bad.length ? 'warn' : ''); after(); };
+  }
+
   // ---------- App ----------
   A.registerApp({
     id: 'agenda', name: t('app.agenda'), icon: 'calendar', color: 'linear-gradient(160deg,#ff6b6b,#e0245e)', keywords: 'agenda kalender calendar taken tasks focus rooster herinneringen todo',
@@ -141,8 +224,9 @@
         const cnt = el.querySelector('[data-cnt]'); if (cnt) { const n = data.items().filter((i) => !i.done && (i.date === A.today() || (i.date && i.date < A.today() && i.type !== 'event'))).length; cnt.textContent = n || ''; }
       }
 
-      const quickBar = () => '<div class="quick"><span style="color:var(--accent)">' + icon('sparkles') + '</span><input data-quick placeholder="Snel noteren — bijv. ‘Morgen om 16:00 economie leren’ of ‘Herinner me Joey te appen’" aria-label="Snel noteren"><button class="prio ' + (quickPrio ? 'on' : '') + '" data-prio title="Hoge prioriteit" aria-pressed="' + quickPrio + '">!</button><button class="btn btn-primary" data-qadd>' + t('common.add') + '</button></div><div class="parse-preview" data-preview></div>';
+      const quickBar = () => calStrip() + '<div class="quick"><span style="color:var(--accent)">' + icon('sparkles') + '</span><input data-quick placeholder="Snel noteren — bijv. ‘Morgen om 16:00 economie leren’ of ‘Herinner me Joey te appen’" aria-label="Snel noteren"><button class="prio ' + (quickPrio ? 'on' : '') + '" data-prio title="Hoge prioriteit" aria-pressed="' + quickPrio + '">!</button><button class="btn btn-primary" data-qadd>' + t('common.add') + '</button></div><div class="parse-preview" data-preview></div>';
       function bindQuick(defaultDate) {
+        bindStrip(main, () => draw());
         const inp = main.querySelector('[data-quick]'); const prev = main.querySelector('[data-preview]'); if (!inp) return;
         const show = () => {
           const v = inp.value.trim();
@@ -189,8 +273,8 @@
         const dueToday = items.filter((i) => !i.done && i.deadline === d && i.date !== d);
         // voorbereiden: toetsen/deadlines binnen 3 dagen waarvoor nog geen voorbereidingstaak bestaat
         const soon = items.filter((i) => !i.done && (i.type === 'test' || i.deadline) && (i.deadline || i.date) > d && (i.deadline || i.date) <= A.ymd(A.addDays(nowD, 3)) && !items.some((x) => x.prepFor === i.id));
-        const lessons = lessonsOn(d);
-        const all = tasks.concat(reminders); const done = all.filter((i) => i.done).length; const pct = all.length ? Math.round(done / all.length * 100) : 0;
+        const entries = dayEntries(d);
+        const all = tasks.concat(reminders); const done = entries.filter((x) => x.done).length; const pct = entries.length ? Math.round(done / entries.length * 100) : 0;
         const openToday = all.filter((i) => !i.done);
         const late = nowD.getHours() >= 20 && openToday.length && pol !== 'auto';
         main.innerHTML = quickBar() + '<div class="ag-head"><div><div class="label" style="color:var(--accent)">' + t('common.today') + '</div><h2 style="margin-top:2px">' + esc(A.fmtLong(d)) + '</h2></div><span class="spacer"></span><button class="btn btn-primary btn-sm" data-new>' + icon('plus') + t('common.new') + '</button></div>' +
@@ -198,16 +282,13 @@
           (late ? '<div class="banner">' + icon('clock') + '<span style="flex:1">Het is al laat — ' + openToday.length + ' ' + (openToday.length === 1 ? 'taak staat' : 'taken staan') + ' nog open. Naar morgen verplaatsen?</span><button class="btn btn-sm btn-primary" data-late-roll>Naar morgen</button></div>' : '') +
           '<div class="today-grid"><div>' +
           (overdue.length ? '<section class="task-section"><div class="label" style="color:var(--danger)">' + icon('alert') + t('task.overdue') + ' (' + overdue.length + ')</div><div class="task-list">' + overdue.map((i) => taskRow(i, { move: true })).join('') + '</div></section>' : '') +
-          (events.length ? '<section class="task-section"><div class="label">' + icon('calendar') + 'Afspraken vandaag</div><div class="task-list">' + events.map((i) => taskRow(i)).join('') + '</div></section>' : '') +
           (soon.length ? '<section class="task-section"><div class="label">' + icon('target') + 'Voorbereiden</div><div class="task-list">' + soon.map((i) => '<div class="task"><span class="dot t-' + esc(i.type) + '" style="margin-top:7px"></span><div class="t-body"><div class="t-title">' + esc(i.title) + '</div><div class="muted" style="font-size:13px">' + esc(kindLabel(i.type)) + ' op ' + esc(A.fmtLong(i.deadline || i.date)) + '</div></div><button class="btn btn-sm" data-prep="' + esc(i.id) + '">+ Voorbereiden vandaag</button></div>').join('') + '</div></section>' : '') +
-          '<section class="task-section"><div class="label">' + icon('check') + 'Taken (' + tasks.filter((i) => !i.done).length + ' open)</div><div class="task-list" data-reorder>' + (tasks.length ? tasks.map((i) => taskRow(i, { reorder: !i.done })).join('') : '<div class="empty">' + t('task.noneToday') + ' Typ hierboven iets bij <i>Snel noteren</i>.</div>') + '</div></section>' +
-          (reminders.length ? '<section class="task-section"><div class="label">' + icon('bell') + 'Herinneringen</div><div class="task-list">' + reminders.map((i) => taskRow(i)).join('') + '</div></section>' : '') +
+          '<section class="task-section"><div class="label">' + icon('check') + 'Dagoverzicht (' + entries.filter((x) => !x.done).length + ' open)</div>' + unifiedList(d, t('task.noneToday') + ' Typ hierboven iets bij <i>Snel noteren</i>.') + '</section>' +
           (dueToday.length ? '<section class="task-section"><div class="label" style="color:var(--danger)">⏳ Deadline vandaag</div><div class="task-list">' + dueToday.map((i) => taskRow(i)).join('') + '</div></section>' : '') +
           '</div><aside style="display:flex;flex-direction:column;gap:12px">' +
-          '<div class="card"><div style="display:flex;justify-content:space-between"><span class="label">Voortgang</span><b style="color:var(--ok)">' + pct + '%</b></div><div style="font-size:34px;font-weight:700;margin-top:6px;letter-spacing:-.02em">' + done + '<span class="muted" style="font-size:18px"> / ' + all.length + '</span></div><div class="progress"><div style="width:' + pct + '%"></div></div><div class="muted" style="font-size:13px">taken en herinneringen afgerond</div></div>' +
-          '<div class="card"><div class="label">Rooster</div>' + (lessons.length ? lessons.map((l) => '<div class="kv"><span>' + hm(l.start) + '</span><span style="text-align:right">' + esc(l.summary || '') + '</span></div>').join('') : '<p class="muted" style="font-size:13px;margin:8px 0 0">Geen lessen. <a href="#/agenda/rooster">Rooster koppelen</a></p>') + '</div>' +
+          '<div class="card"><div style="display:flex;justify-content:space-between"><span class="label">Voortgang</span><b style="color:var(--ok)">' + pct + '%</b></div><div style="font-size:34px;font-weight:700;margin-top:6px;letter-spacing:-.02em">' + done + '<span class="muted" style="font-size:18px"> / ' + entries.length + '</span></div><div class="progress"><div style="width:' + pct + '%"></div></div><div class="muted" style="font-size:13px">items afgerond</div></div>' +
           '<div class="card"><div class="label">Tips</div><p class="muted" style="font-size:13px;line-height:1.5;margin:8px 0 0">Swipe naar rechts om af te vinken, naar links om te verwijderen. Sleep aan ⋮⋮ om te ordenen. Dubbelklik om te bewerken. Onafgemaakt doorschuiven: <a href="#/settings?section=taken">' + esc(t('roll.' + pol)) + '</a>.</p></div></aside></div>';
-        bindQuick(d); bindTasks(main);
+        bindQuick(d); bindTasks(main); bindExt(main, () => draw());
         main.querySelector('[data-new]').onclick = () => openItemDialog(null, { date: d });
         const r1 = main.querySelector('[data-roll-today]'); if (r1) r1.onclick = () => { const n = A.tasks.rollover(overdue.map((x) => x.id), d); A.toast(t('task.rolled', { n })); draw(); };
         const r2 = main.querySelector('[data-roll-tomorrow]'); if (r2) r2.onclick = () => { const n = A.tasks.rollover(overdue.map((x) => x.id), A.ymd(A.addDays(nowD, 1))); A.toast(t('task.rolled', { n })); draw(); };
@@ -261,8 +342,14 @@
         const body = main.querySelector('.tgrid-body'); if (body) body.scrollTop = Math.max(0, (Math.min(A.now().getHours(), 17) - 1 - START_H) * HOUR_PX);
       }
       function drawDay() {
-        main.innerHTML = quickBar() + head(A.fmtLong(cursor), (c, n) => A.addDays(c, n)) + legend + timeGrid([cursor]);
-        bindQuick(A.ymd(cursor)); bindGrid();
+        const mode = store.get('dayMode', 'list') === 'grid' ? 'grid' : 'list';
+        const seg = '<span class="seg" role="group" aria-label="Weergave"><button class="btn btn-sm ' + (mode === 'list' ? 'on' : '') + '" data-dm="list">Lijst</button><button class="btn btn-sm ' + (mode === 'grid' ? 'on' : '') + '" data-dm="grid">Tijdlijn</button></span>';
+        const k = A.ymd(cursor);
+        main.innerHTML = quickBar() + head(A.fmtLong(cursor), (c, n) => A.addDays(c, n), seg) +
+          (mode === 'list' ? '<section class="task-section"><div class="label">' + icon('check') + 'Dagoverzicht (' + dayEntries(k).filter((x) => !x.done).length + ' open)</div>' + unifiedList(k) + '</section>' : legend + timeGrid([cursor]));
+        bindQuick(k);
+        main.querySelectorAll('[data-dm]').forEach((b) => (b.onclick = () => { store.set('dayMode', b.dataset.dm); draw(); }));
+        if (mode === 'list') { bindTasks(main); bindExt(main, () => draw()); } else bindGrid();
       }
       function drawWeek() {
         const st = A.startOfWeek(cursor); const days = [0, 1, 2, 3, 4, 5, 6].map((i) => A.addDays(st, i)); const en = days[6];
@@ -304,7 +391,8 @@
         if (!ev.length) body = '<div class="empty">Nog geen rooster gekoppeld. Voeg je Somtoday- of Google Agenda-link (iCal) toe, of importeer een .ics-bestand.<div style="margin-top:14px"><button class="btn btn-primary" data-link>Rooster koppelen</button></div></div>';
         else if (!lessons.length) body = '<div class="empty">Geen lessen of afspraken op deze dag. Je bent vrij 🎉</div>';
         else { const rows = []; lessons.forEach((l, i) => { if (i > 0) { const gap = (new Date(l.start) - new Date(lessons[i - 1].end || lessons[i - 1].start)) / 60000; if (gap >= 30) rows.push('<div class="free-slot">Vrij · ' + Math.round(gap) + ' min</div>'); } rows.push('<div class="lesson"><time>' + hm(l.start) + (l.end ? '–' + hm(l.end) : '') + '</time><div><b>' + esc(l.summary || 'Les') + '</b>' + (l.location ? '<div class="muted" style="font-size:13px">' + esc(l.location) + '</div>' : '') + '</div></div>'); }); const le = lessons[lessons.length - 1].end; if (le) rows.push('<div class="free-slot">Vrij vanaf ' + hm(le) + '</div>'); body = '<div style="display:flex;flex-direction:column;gap:8px">' + rows.join('') + '</div>'; }
-        main.innerHTML = head('Rooster · ' + A.fmtLong(d), (c, n) => A.addDays(c, n), ev.length ? '<button class="btn btn-sm" data-link>Agenda\'s</button>' : '') + body;
+        main.innerHTML = calStrip() + head('Rooster · ' + A.fmtLong(d), (c, n) => A.addDays(c, n), ev.length ? '<button class="btn btn-sm" data-link>Agenda\'s</button>' : '') + body;
+        bindStrip(main, () => draw());
         main.querySelectorAll('[data-link]').forEach((b) => (b.onclick = () => A.go('settings', null, { section: 'agendas' })));
       }
 
@@ -313,7 +401,9 @@
       draw();
       const iv = setInterval(() => { const nl = main.querySelector('.now-line'); if (nl) { const n = A.now(); nl.style.top = ((n.getHours() * 60 + n.getMinutes() - START_H * 60) / 60 * HOUR_PX) + 'px'; } }, 60000);
       const off = A.bus.on('data', (k) => { if (k === 'items' && !document.querySelector('.modal')) { /* externe wijziging (bijv. eiland) */ } });
-      return () => { clearInterval(iv); off(); redraw = () => A.rerender(); };
+      // automatische verversing van een agenda: tekenen we alleen opnieuw als je niet midden in iets zit
+      const offCal = A.bus.on('calendars', () => { const q = main.querySelector('[data-quick]'); if (document.querySelector('.ag') && !document.querySelector('.modal') && !(q && q.value)) draw(); });
+      return () => { clearInterval(iv); off(); offCal(); redraw = () => A.rerender(); };
     }
   });
 })();
