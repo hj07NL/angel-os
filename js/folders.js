@@ -10,27 +10,29 @@
   function pathOf(folders, id) { const out = []; let f = folders.find((x) => x.id === id); let guard = 0; while (f && guard++ < 50) { out.unshift(f); f = folders.find((x) => x.id === f.parent_id); } return out; }
   const pathLabel = (folders, id) => pathOf(folders, id).map((f) => f.name).join(' › ') || A.t('site.uncategorized');
   function descendants(folders, id) { const out = []; const walk = (pid) => children(folders, pid).forEach((c) => { out.push(c.id); walk(c.id); }); walk(id); return out; }
-  function uncategorized(folders) { return folders.find((f) => f.system) || folders.find((f) => f.name === 'Niet ingedeeld'); }
+  const rootOf = (folders) => (folders || data.folders()).find((f) => f.root) || null;
+  const rootId = (folders) => { const r = rootOf(folders); return r ? r.id : null; };
+  function uncategorized(folders) { return folders.find((f) => f.system && !f.root) || folders.find((f) => f.name === 'Niet ingedeeld'); }
   function countIn(folders, sites, id, deep) { const ids = new Set([id].concat(deep ? descendants(folders, id) : [])); return sites.filter((s) => ids.has(s.folder_id)).length; }
 
   function createFolder(name, parentId, emoji) {
     name = (name || '').trim(); if (!name) throw new Error('Geef de map een naam');
-    const folders = data.folders();
+    const folders = data.folders(); if (!parentId) parentId = rootId(folders);
     const exists = folders.find((f) => (f.parent_id || null) === (parentId || null) && f.name.toLowerCase() === name.toLowerCase());
     if (exists) return { folder: exists, created: false };
     const f = { id: uid(), name, emoji: emoji || '📁', parent_id: parentId || null, order: folders.length, created_at: new Date().toISOString() };
     folders.push(f); data.saveFolders(folders);
     return { folder: f, created: true };
   }
-  function renameFolder(id, name) { const folders = data.folders(); const f = folders.find((x) => x.id === id); if (!f) return; f.name = name.trim() || f.name; data.saveFolders(folders); }
+  function renameFolder(id, name) { const folders = data.folders(); const f = folders.find((x) => x.id === id); if (!f || f.root) return; f.name = name.trim() || f.name; data.saveFolders(folders); }
   function moveFolder(id, newParent) {
     const folders = data.folders();
     if (id === newParent || descendants(folders, id).includes(newParent)) throw new Error('Een map kan niet in zichzelf worden geplaatst');
-    const f = folders.find((x) => x.id === id); if (!f) return; f.parent_id = newParent || null; f.order = folders.length; data.saveFolders(folders);
+    const f = folders.find((x) => x.id === id); if (!f || f.root) return; f.parent_id = newParent || rootId(folders); f.order = folders.length; data.saveFolders(folders);
   }
   // Verwijderen van een map verplaatst de inhoud (websites én submappen) naar de bovenliggende map of "Niet ingedeeld" — er gaan nooit websites verloren.
   function deleteFolder(id) {
-    const folders = data.folders(); const f = folders.find((x) => x.id === id); if (!f || f.system) throw new Error('Deze map kan niet worden verwijderd');
+    const folders = data.folders(); const f = folders.find((x) => x.id === id); if (!f || f.system || f.root) throw new Error('Deze map kan niet worden verwijderd');
     const target = f.parent_id || uncategorized(folders).id;
     folders.forEach((x) => { if (x.parent_id === id) x.parent_id = f.parent_id || null; });
     const sites = data.websites(); let moved = 0; sites.forEach((s) => { if (s.folder_id === id) { s.folder_id = target; moved++; } });
@@ -132,7 +134,7 @@
     }
     const newFolders = []; // { key, name, parentKey|parentId, path }
     const keyForPath = (path) => {
-      let parentId = null, parentKey = null;
+      let parentId = rootId(folders), parentKey = null;
       for (let i = 0; i < path.length; i++) {
         const name = path[i];
         const existing = parentKey ? null : folders.find((f) => (f.parent_id || null) === parentId && f.name.toLowerCase() === name.toLowerCase());
@@ -209,5 +211,76 @@
     return snap;
   }
 
-  A.folders = { children, pathOf, pathLabel, descendants, uncategorized, countIn, createFolder, renameFolder, moveFolder, deleteFolder, mergeFolders, classify, suggestTags, findDuplicates, proposeReorganization, applyReorganization, undoLast, RULES };
+  // ---------- Hoofdmap "Algemene mappen" (eenmalig, additief) ----------
+  // Maakt de hoofdmap en hangt alle bestaande bovenste mappen eronder. Websites worden niet aangeraakt;
+  // vooraf een back-up en een herstelpunt (Opnieuw indelen → Ongedaan maken zet de oude structuur terug).
+  function migrateRoot() {
+    const folders = data.folders();
+    if (!folders.length || folders.some((f) => f.root)) return { ok: true, skipped: true };
+    const before = data.websites(); const baseline = before.map((s) => s.id + '|' + s.url + '|' + s.folder_id).sort().join('\n');
+    try {
+      A.makeBackup('Voor hoofdmap Algemene mappen');
+      const snap = { id: uid(), at: new Date().toISOString(), label: 'Hoofdmap Algemene mappen (migratie)', assignments: Object.fromEntries(before.map((s) => [s.id, s.folder_id])), tags: {}, folders: JSON.parse(JSON.stringify(folders)) };
+      const root = { id: uid(), name: 'Algemene mappen', emoji: '🗂️', parent_id: null, order: -1, root: true, created_at: new Date().toISOString() };
+      const next = folders.map((f) => ((f.parent_id || null) === null ? Object.assign({}, f, { parent_id: root.id }) : f));
+      next.unshift(root);
+      // controle vóór opslaan: geen map kwijt, geen lus, elke website verwijst naar een bestaande map
+      const ids = new Set(next.map((f) => f.id));
+      if (next.length !== folders.length + 1 || folders.some((f) => !ids.has(f.id))) throw new Error('mappen kwijt');
+      if (before.some((s) => !ids.has(s.folder_id))) throw new Error('website zonder map');
+      next.forEach((f) => { let g = 0, c = f; while (c && c.parent_id && g++ < 60) c = next.find((x) => x.id === c.parent_id); if (g >= 60) throw new Error('lus in mappen'); });
+      data.saveFolders(next);
+      const after = data.websites().map((s) => s.id + '|' + s.url + '|' + s.folder_id).sort().join('\n');
+      if (after !== baseline) throw new Error('websites veranderd');
+      const hist = store.get('folderHistory', []); hist.unshift(snap); store.set('folderHistory', hist.slice(0, 10));
+      return { ok: true, migrated: true, folders: next.length };
+    } catch (e) { return { ok: false, reason: e.message }; }
+  }
+
+  // ---------- Analyseren (stap 1 van website toevoegen) ----------
+  const stripRoot = (path) => (path && path[0] && path[0].toLowerCase() === 'algemene mappen' ? path.slice(1) : path) || [];
+  const SHORTENERS = /(^|\.)(bit\.ly|tinyurl\.com|t\.co|goo\.gl|is\.gd|ow\.ly|cutt\.ly|rb\.gy|shorturl\.at)$/;
+  const RISKY_TLD = /\.(zip|mov|tk|ml|ga|cf|gq|xyz|top|click|work|loan|icu)$/;
+  function safetyBasics(url) {
+    const checks = []; let level = 'ok'; const warn = (label, note, risk) => { checks.push({ ok: false, label, note }); if (risk) level = 'risico'; else if (level === 'ok') level = 'let_op'; };
+    let u; try { u = new URL(url); } catch (e) { return { level: 'risico', checks: [{ ok: false, label: 'Geldige URL', note: 'De URL is ongeldig.' }] }; }
+    if (u.protocol === 'https:') checks.push({ ok: true, label: 'Gebruikt HTTPS' }); else warn('Geen HTTPS', 'Verbinding is niet versleuteld.');
+    if (u.username || u.password || /@/.test(u.host)) warn('Inloggegevens of @ in het adres', 'Vaak een truc om een ander adres te verbergen.', true);
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(u.hostname) || /^\[/.test(u.hostname)) warn('Adres is een IP-nummer', 'Betrouwbare sites gebruiken meestal een domeinnaam.', true);
+    if (/xn--/.test(u.hostname)) warn('Bevat speciale (punycode-)tekens', 'Kan een look-alike van een andere site zijn.');
+    if (SHORTENERS.test(u.hostname)) warn('Verkorte link', 'Je ziet niet waar die uiteindelijk heen gaat.');
+    if (RISKY_TLD.test(u.hostname)) warn('Domeinextensie met veel misbruik', u.hostname.split('.').pop());
+    if (u.hostname.split('.').length > 4 || (u.hostname.match(/-/g) || []).length > 3) warn('Ongewoon lange of vreemde domeinnaam', u.hostname);
+    if (level === 'ok') checks.push({ ok: true, label: 'Geen waarschuwingen in de basiscontrole' });
+    return { level, checks };
+  }
+  async function analyze(rawUrl, rawName, opts) {
+    opts = opts || {};
+    let url = String(rawUrl || '').trim(); if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    const u = new URL(url); if (!/^https?:$/.test(u.protocol)) throw new Error('Alleen http(s)-adressen');
+    const host = A.hostOf(url); const label = host.replace(/^www\./, '').split('.')[0];
+    const name = (rawName || '').trim() || label.charAt(0).toUpperCase() + label.slice(1);
+    const folders = data.folders(); const draft = { name, url, description: '', ai_summary: '', tags: [] };
+    const dup = data.websites().find((x) => A.normUrl(x.url) === A.normUrl(url));
+    let c = classify(draft, data.health()); let aiUsed = false, description = '', when = '', aiTags = null, aiSafety = null;
+    if (A.ai && A.ai.available() && opts.useAI !== false) {
+      try { const r = await A.ai.analyzeWebsite(draft, folders); aiUsed = true;
+        if (r.path && r.path.length) { const p = stripRoot(r.path); c = { path: p, confidence: r.confidence || 0.6, why: ['Angel: ' + (r.reason || 'analyse')], uncertain: (r.confidence || 0.6) < 0.5 }; }
+        description = r.description || ''; when = r.when || ''; aiTags = Array.isArray(r.tags) ? r.tags.slice(0, 6) : null; aiSafety = r.safety_note || null;
+      } catch (e) { /* ingebouwde regels blijven gelden */ }
+    }
+    const leaf = c.path[c.path.length - 1];
+    if (!description) description = c.uncertain ? name + ' (' + host + ')' : name + ' — website over ' + leaf.toLowerCase() + ' (' + host + ').';
+    if (!when) when = c.uncertain ? '' : 'Gebruik dit als je iets zoekt of doet rond ' + leaf.toLowerCase() + '.';
+    const target = folderByPath(c.path);
+    const tags = aiTags || suggestTags(Object.assign({}, draft, { description }));
+    const safety = safetyBasics(url); if (aiSafety) safety.checks.push({ ok: true, label: 'Angel: ' + aiSafety });
+    const h = data.health().results && data.health().results[url]; if (h) safety.checks.push({ ok: ['online', 'https_valid'].includes(h.status), label: 'Laatste maandcontrole: ' + A.t('site.status.' + h.status), note: h.detail });
+    return { name, url, host, description, ai_summary: when, tags, path: c.path, folderId: target ? target.id : null, isNewFolder: !target, confidence: c.confidence, uncertain: !!c.uncertain, why: c.why, safety, aiUsed, duplicate: dup || null, alt: c.alt || null };
+  }
+  function folderByPath(path) { return A.folderByPath(data.folders(), path); }
+  // maakt het pad aan voor ontbrekende mappen (onder de hoofdmap) en geeft het id van de laatste terug
+  function ensurePath(path) { let pid = rootId(); path.forEach((n) => { pid = createFolder(n, pid).folder.id; }); return pid; }
+
+  A.folders = { analyze, ensurePath, stripRoot, safetyBasics, rootOf, rootId, migrateRoot, children, pathOf, pathLabel, descendants, uncategorized, countIn, createFolder, renameFolder, moveFolder, deleteFolder, mergeFolders, classify, suggestTags, findDuplicates, proposeReorganization, applyReorganization, undoLast, RULES };
 })();

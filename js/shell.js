@@ -395,6 +395,8 @@
         if (s.notifications.overdue) A.notify('overdue', 'overdue-' + d, elig.length + ' taken zijn te laat', elig.slice(0, 3).map((x) => x.title).join(', '), { link: '#/agenda' });
       }
     }
+    // 1b) staat doorschuiven op automatisch, dan schuift alles van eerdere dagen mee (ook na het aanzetten van de instelling)
+    if (s.tasks.rollover === 'auto') { const left = A.tasks.eligibleRollover(d); if (left.length) A.tasks.rollover(left.map((x) => x.id), d); }
     // 2) taakherinneringen op het tijdstip
     if (!A.inQuietHours(s)) data.items().filter((i) => !i.done && i.date === d && i.time && Math.abs(A.hmToMin(i.time) - m) <= 1).forEach((i) => A.notify('task_reminders', 'rem-' + i.id + '-' + d + '-' + i.time, (i.type === 'reminder' ? '⏰ ' : '') + i.title, 'Nu · ' + i.time, { link: '#/agenda' }));
     // 3) dagplanning
@@ -447,11 +449,16 @@
     tick(); setInterval(tick, 1000);
     render();
     if (!mig.ok) A.notify(null, 'migfail-' + A.today(), 'Upgrade van je gegevens is niet uitgevoerd', 'Je gegevens zijn ongewijzigd gebleven (' + mig.reason + '). Kijk bij Instellingen → Gegevens.', { link: '#/settings?section=gegevens' });
-    else if (mig.migrated) A.toast('Angel OS is bijgewerkt — al je ' + mig.count + ' websites zijn behouden ✓');
+    if (mig.ok) { const mr = A.folders.migrateRoot(); if (mr.ok === false) A.notify(null, 'rootfail-' + A.today(), 'Hoofdmap niet aangemaakt', 'Je mappen zijn ongewijzigd gebleven (' + mr.reason + ').', { link: '#/library' }); else if (mr.migrated) A.toast('Alle mappen staan nu onder “Algemene mappen” — niets kwijtgeraakt ✓'); }
+    if (mig.ok && mig.migrated) A.toast('Angel OS is bijgewerkt — al je ' + mig.count + ' websites zijn behouden ✓');
     A.weather.applyBackground();
     setInterval(() => A.weather.applyBackground(), 20 * 60000);
     loadHealthReport();
     setTimeout(daily, 1500); setInterval(daily, 60000);
+    A.cal.start();
+    // altijd bereikbare snel-toevoegknop
+    const fab = document.createElement('button'); fab.className = 'fab'; fab.id = 'fab'; fab.type = 'button'; fab.setAttribute('aria-label', 'Snel toevoegen'); fab.title = 'Snel toevoegen (taak, afspraak, herinnering…)'; fab.innerHTML = A.icon('plus');
+    fab.onclick = () => A.openQuickAdd({}); document.body.appendChild(fab);
   }
   document.addEventListener('DOMContentLoaded', boot);
 })();

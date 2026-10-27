@@ -207,12 +207,13 @@
     ['Niet ingedeeld', '📥']
   ];
   function buildDefaultFolders() {
-    const out = []; let order = 0;
+    const root = { id: uid(), name: 'Algemene mappen', emoji: '🗂️', parent_id: null, order: -1, root: true, created_at: new Date().toISOString() };
+    const out = [root]; let order = 0;
     const walk = (nodes, parent) => nodes.forEach(([name, emoji, kids]) => {
       const f = { id: uid(), name, emoji, parent_id: parent, order: order++, created_at: new Date().toISOString(), system: name === 'Niet ingedeeld' };
       out.push(f); if (kids) walk(kids, f.id);
     });
-    walk(DEFAULT_TREE, null);
+    walk(DEFAULT_TREE, root.id);
     return out;
   }
   const LEGACY_MAP = {
@@ -221,7 +222,7 @@
     tools: ['Technologie', 'Hulpmiddelen'], security: ['Technologie', 'Beveiliging'], productivity: ['Technologie', 'Productiviteit'], other: ['Niet ingedeeld']
   };
   function folderByPath(folders, path) {
-    let parent = null, f = null;
+    let parent = (folders.find((x) => x.root) || {}).id || null, f = null;
     for (const name of path) { f = folders.find((x) => x.parent_id === parent && x.name === name); if (!f) return null; parent = f.id; }
     return f;
   }
@@ -236,7 +237,8 @@
     privacy: { tracking: true, recommendations: true, location: 'ask' },
     weatherCity: null,
     library: { sort: 'manual', autoCategorize: true, duplicateDetect: true, checkFrequency: 'monthly' },
-    tasks: { defaultDate: 'today', rollover: 'ask', defaultView: 'day' },
+    tasks: { defaultDate: 'today', rollover: 'auto', defaultView: 'day' },
+    calendars: { auto: true, everyHours: 3 },
     ai: { enabled: false, provider: 'anthropic', apiKey: '', model: '' }
   };
   function deepMerge(base, over) {
@@ -328,7 +330,7 @@
   }
 
   // ---------- Back-up en migratie ----------
-  const BACKUP_KEYS = ['websites', 'folders', 'notes', 'projects', 'items', 'subjects', 'settings', 'rooster', 'calendars', 'swipe', 'shortcuts', 'widgets', 'launcher', 'px-profiles', 'px-searches', 'px-runs', 'px-last', 'pinHash', 'folderHistory'];
+  const BACKUP_KEYS = ['websites', 'folders', 'notes', 'projects', 'items', 'subjects', 'settings', 'rooster', 'calendars', 'swipe', 'shortcuts', 'widgets', 'launcher', 'px-profiles', 'px-searches', 'px-runs', 'px-last', 'pinHash', 'folderHistory', 'extDone'];
   function snapshot() { const out = {}; BACKUP_KEYS.forEach((k) => { const v = store.get(k, null); if (v != null) out[k] = v; }); return out; }
   function makeBackup(reason) {
     const backups = store.get('backups', []);

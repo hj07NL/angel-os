@@ -26,7 +26,7 @@
     'task.type.task': 'Taak', 'task.type.reminder': 'Herinnering', 'task.type.event': 'Afspraak', 'task.type.homework': 'Huiswerk', 'task.type.test': 'Toets',
     'task.type.project': 'Project', 'task.type.reading': 'Lezen',
     'task.added': 'Toegevoegd', 'task.overdue': 'Te laat', 'task.rolled': '{n} taken doorgeschoven', 'task.noneToday': 'Niets gepland voor vandaag.',
-    'roll.auto': 'Automatisch naar morgen', 'roll.overdue': 'In ‘Te laat’ laten staan', 'roll.ask': 'Eerst vragen',
+    'roll.auto': 'Automatisch naar de volgende dag', 'roll.overdue': 'Uit: blijft in ‘Te laat’ staan', 'roll.ask': 'Eerst vragen',
     // websites
     'site.status.online': 'Online', 'site.status.offline': 'Offline of onbereikbaar', 'site.status.redirected': 'Doorverwezen', 'site.status.https_valid': 'HTTPS geldig',
     'site.status.cert_problem': 'Certificaatprobleem', 'site.status.suspicious': 'Mogelijk verdacht', 'site.status.not_verified': 'Beveiliging niet geverifieerd',

@@ -25,7 +25,7 @@
   // Doorschuiven: zelfde ID, geen kopie, afgeronde taken nooit. Afspraken (events) schuiven niet mee.
   function eligibleRollover(beforeDate) {
     const t = beforeDate || A.today();
-    return data.items().filter((i) => !i.done && i.date && i.date < t && i.type !== 'event');
+    return data.items().filter((i) => !i.done && i.date && i.date < t && i.type !== 'event' && i.type !== 'test');
   }
   function rollover(ids, toDate) {
     const list = data.items(); let n = 0;
@@ -39,7 +39,15 @@
     data.saveItems(list);
     return n;
   }
-  A.tasks = { addItem, updateItem, toggleDone, eligibleRollover, rollover };
+  // Aantal dagen dat een taak is uitgesteld (verschil tussen oorspronkelijke en huidige datum).
+  function postponedDays(i) { if (!i || !i.originalDate || !i.date || i.date <= i.originalDate) return 0; return Math.round((A.parseYmd(i.date) - A.parseYmd(i.originalDate)) / 864e5); }
+  const postponedLabel = (n) => n + (n === 1 ? ' dag' : ' dagen') + ' uitgesteld';
+  // Eenmalig: automatisch doorschuiven is vanaf fase 2 de standaard. Alleen 'eerst vragen' wordt omgezet; 'laten staan' blijft.
+  (function migrateRollover() {
+    const s = store.get('settings', null); if (!s || !s.tasks || s.tasks.rolloverV2) return;
+    s.tasks.rolloverV2 = true; if (s.tasks.rollover === 'ask') s.tasks.rollover = 'auto'; store.set('settings', s);
+  })();
+  A.tasks = { addItem, updateItem, toggleDone, eligibleRollover, rollover, postponedDays, postponedLabel };
 
   function createNote(title, text) {
     const n = { id: A.uid(), title: title || '', html: '<p>' + A.esc(text || '') + '</p>', content: text || '', created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
@@ -311,11 +319,17 @@
       const out = await this.complete(system, 'Verzoek: ' + text + '\nKandidaten (eigen bibliotheek): ' + JSON.stringify(candidates), true);
       return this.parseJson(out);
     },
+    async analyzeWebsite(site, folders) {
+      const paths = folders.filter((f) => !f.root).map((f) => A.folders.pathLabel(folders, f.id).replace(/^Algemene mappen › /, ''));
+      const out = await this.complete('Je analyseert een website voor een persoonlijke bibliotheek. Antwoord ALLEEN met JSON: {"path": ["Hoofdmap","Submap"], "confidence": 0-1, "reason": "kort", "description": "1-2 zinnen Nederlands: wat de site doet", "when": "1 zin: wanneer gebruik je het", "tags": ["max 5"], "safety_note": "alleen invullen als je concrete, algemeen bekende informatie hebt; anders weglaten"}. Gebruik bij voorkeur een bestaand pad; Angel mag een nieuw onderwerp of submap voorstellen als niets past (maximaal 2 niveaus). Verzin niets: weet je de site niet, geef lage confidence en een beschrijving die alleen uit naam en adres volgt. Bestaande paden: ' + paths.slice(0, 80).join(' | '),
+        JSON.stringify({ name: site.name, url: site.url }), true);
+      return this.parseJson(out);
+    },
     async classifyWebsite(site, folders) {
-      const paths = folders.map((f) => A.folders.pathLabel(folders, f.id));
+      const paths = folders.filter((f) => !f.root).map((f) => A.folders.pathLabel(folders, f.id).replace(/^Algemene mappen › /, ''));
       const out = await this.complete('Je deelt websites in mappen in. Antwoord alleen met JSON: {"path": ["Hoofdmap","Submap"], "confidence": 0-1, "reason": "kort"}. Gebruik bij voorkeur een bestaand pad; maak alleen een nieuw pad als niets past. Bestaande paden: ' + paths.join(' | '),
         JSON.stringify({ name: site.name, url: site.url, description: site.description, tags: site.tags }), true);
-      return this.parseJson(out);
+      const r = this.parseJson(out); if (r && r.path) r.path = A.folders.stripRoot(r.path); return r;
     },
     async test() { const r = await this.complete('Antwoord met JSON {"ok":true}', 'test', true); return this.parseJson(r).ok === true; }
   };
