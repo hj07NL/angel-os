@@ -1,0 +1,2 @@
+# Voor lokaal testen met "npx wrangler dev". Dit bestand staat in .gitignore.
+ENCRYPTION_SECRET=vervang-dit-door-minstens-32-willekeurige-tekens

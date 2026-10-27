@@ -1,0 +1,16 @@
+name = "angel-os-agenda"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+# Niet-geheime instellingen. Pas ALLOWED_ORIGIN aan als je app op een ander adres draait.
+[vars]
+ALLOWED_ORIGIN = "https://hj07nl.github.io"
+ALLOWED_HOSTS = "calendar.google.com"
+
+# Maak de KV-opslag met:  npx wrangler kv namespace create CAL
+# en plak het id hieronder (het id is geen geheim).
+[[kv_namespaces]]
+binding = "CAL"
+id = "VUL-HIER-JE-KV-ID-IN"
+
+# ENCRYPTION_SECRET is een geheim: zet het met  npx wrangler secret put ENCRYPTION_SECRET
