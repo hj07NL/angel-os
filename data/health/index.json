@@ -1,5 +1,18 @@
 [
  {
+  "month": "2026-11",
+  "checked_at": "2026-11-01T10:27:59.678Z",
+  "total": 70,
+  "problems": 15,
+  "counts": {
+   "https_valid": 55,
+   "inconclusive": 11,
+   "offline": 2,
+   "redirected": 1,
+   "parked": 1
+  }
+ },
+ {
   "month": "2026-10",
   "checked_at": "2026-10-24T20:24:04.776Z",
   "total": 70,
